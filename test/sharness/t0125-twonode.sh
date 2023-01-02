@@ -27,7 +27,7 @@ check_dir_fetch() {
   ref=$2
 
   test_expect_success "node can fetch all refs for dir" '
-    ipfsi $node refs -r $ref > /dev/null
+    ipfsi $node dag stat --enc=json $ref > /dev/null
   '
 }
 
@@ -38,11 +38,12 @@ run_single_file_test() {
   '
 
   check_file_fetch 0 $FILEA_HASH filea
+
 }
 
 run_random_dir_test() {
   test_expect_success "create a bunch of random files" '
-    random-files -depth=3 -dirs=4 -files=5 -seed=5 foobar > /dev/null
+    random-files -depth=3 -dirs=4 -files=5 -seed=5 -filesize=4096 foobar  > /dev/null
   '
 
   test_expect_success "add those on node 0" '
@@ -53,19 +54,12 @@ run_random_dir_test() {
 }
 
 run_advanced_test() {
-  startup_cluster 2 "$@"
-
-  test_expect_success "clean repo before test" '
-    ipfsi 0 repo gc > /dev/null &&
-    ipfsi 1 repo gc > /dev/null
-  '
-
   run_single_file_test
 
   run_random_dir_test
 
   test_expect_success "node0 data transferred looks correct" '
-    ipfsi 0 bitswap stat > stat0 &&
+    ipfsi 0 bitswap stat -v > stat0 &&
     test_should_contain "blocks sent: 126" stat0 &&
     test_should_contain "blocks received: 5" stat0 &&
     test_should_contain "data sent: 228113" stat0 &&
@@ -73,7 +67,7 @@ run_advanced_test() {
 '
 
   test_expect_success "node1 data transferred looks correct" '
-    ipfsi 1 bitswap stat > stat1 &&
+    ipfsi 1 bitswap stat -v > stat1 &&
     test_should_contain "blocks received: 126" stat1 &&
     test_should_contain "blocks sent: 5" stat1 &&
     test_should_contain "data received: 228113" stat1 &&
@@ -85,30 +79,39 @@ run_advanced_test() {
   '
 }
 
-test_expect_success "set up tcp testbed" '
+reset_test_nodes() {
+  test_expect_success "set up tcp testbed" '
   iptb testbed create -type localipfs -count 2 -force -init
-'
+  '
 
-test_expect_success "disable routing, use direct peering" '
+  test_expect_success "disable routing, use direct peering" '
   iptb run -- ipfs config Routing.Type none &&
   iptb run -- ipfs config --json Bootstrap "[]"
-'
+  '
 
-addrs='"[\"/ip4/127.0.0.1/tcp/0\", \"/ip4/127.0.0.1/udp/0/quic\"]"'
-test_expect_success "configure addresses" '
-  ipfsi 0 config --json Addresses.Swarm '"${addrs}"' &&
-  ipfsi 1 config --json Addresses.Swarm '"${addrs}"'
-'
+  addrs='"[\"/ip4/127.0.0.1/tcp/0\", \"/ip4/127.0.0.1/udp/0/quic-v1\"]"'
+  test_expect_success "configure addresses" '
+  iptb run -- ipfs config --json Addresses.Swarm '"${addrs}"'
+  '
+
+  startup_cluster 2 "$@"
+}
+
+reset_test_nodes
 
 # Test TCP transport
 echo "Testing TCP"
+addrs='"[\"/ip4/127.0.0.1/tcp/0\"]"'
 test_expect_success "use TCP only" '
+  iptb run -- ipfs config --json Addresses.Swarm '"${addrs}"' &&
   iptb run -- ipfs config --json Swarm.Transports.Network.QUIC false &&
   iptb run -- ipfs config --json Swarm.Transports.Network.Relay false &&
   iptb run -- ipfs config --json Swarm.Transports.Network.WebTransport false &&
   iptb run -- ipfs config --json Swarm.Transports.Network.Websocket false
 '
 run_advanced_test
+
+reset_test_nodes
 
 # test multiplex muxer
 echo "Running advanced tests with mplex"
@@ -117,29 +120,43 @@ test_expect_success "disable yamux" '
 '
 run_advanced_test
 
+reset_test_nodes
+
 test_expect_success "re-enable yamux" '
   iptb run -- ipfs config --json Swarm.Transports.Multiplexers.Yamux null
 '
+run_advanced_test
+
+reset_test_nodes
 
 # test Noise
-
 echo "Running advanced tests with NOISE"
 test_expect_success "use noise only" '
   iptb run -- ipfs config --json Swarm.Transports.Security.TLS false
 '
-
 run_advanced_test
+
+reset_test_nodes
 
 # test QUIC
 echo "Running advanced tests over QUIC"
+addrs='"[\"/ip4/127.0.0.1/udp/0/quic-v1\"]"'
 test_expect_success "use QUIC only" '
+  iptb run -- ipfs config --json Addresses.Swarm '"${addrs}"' &&
   iptb run -- ipfs config --json Swarm.Transports.Network.QUIC true &&
   iptb run -- ipfs config --json Swarm.Transports.Network.TCP false
 '
-
 run_advanced_test
 
-# TODO: test WebTransport
-# run_advanced_test with WebTransport-only Addresses.Swarm
+reset_test_nodes
+
+# test WebTransport
+echo "Running advanced tests over WebTransport"
+addrs='"[\"/ip4/127.0.0.1/udp/0/quic-v1/webtransport\"]"'
+test_expect_success "use WebTransport only" '
+  iptb run -- ipfs config --json Addresses.Swarm '"${addrs}"' &&
+  iptb run -- ipfs config --json Swarm.Transports.Network.WebTransport true
+'
+run_advanced_test
 
 test_done
